@@ -1,0 +1,54 @@
+# 📋 一键配置提示词（复制给 opencode 即可）
+
+下面整段复制给 opencode（或任何 AI 编码助手），它会自己完成全部配置。
+
+---
+
+## 提示词正文（从此行开始复制）
+
+你是配置助手。请帮我在本机 opencode 上自动完成「图片自动识别」配置，让当前不支持图片的模型也能通过粘贴图片直接问答。请一步一步执行，不要问多余的确认问题，自主完成：
+
+【目标】
+opencode 检测到用户粘贴图片但当前模型不支持图片输入时，自动把图片发给免费的视觉模型识别，再用文字描述替换图片，使主模型能"看"图。全程自动、无需手动切换模型。
+
+【请执行以下操作】
+1. 识别当前正在使用的模型。如果拿不准，就用当前会话实际使用的模型 ID（格式 provider/model，如 opencode/deepseek-v4-flash-free）。请先打印你识别到的模型 ID。
+2. 检测操作系统：Windows 用 %USERPROFILE%\.config\opencode\；macOS/Linux 用 ~/.config/opencode/。打印你将写入的完整路径。
+3. 创建（或覆盖）配置文件 `opencode-image-proxy.json` 到上述配置目录，内容如下（把 MODELS_GO_HERE 替换为用户当前模型，见第 1 步）。如果用户当前模型本身支持图片输入（如 Claude/GPT/Gemini），请务必保留 imageIncapableModels 留空数组 []，并在最后提醒用户该模型原生支持图片、此配置可选。
+
+```json
+{
+  "imageIncapableModels": ["MODELS_GO_HERE"],
+  "imageReaderModel": {
+    "providerID": "opencode",
+    "modelID": "mimo-v2.5-free"
+  },
+  "analysisPrompt": "The user has pasted an image into their chat. You are a meticulous image analyst. Be thorough and precise. Include:\n- All visible elements (objects, text, UI elements, people, charts, etc.)\n- EXACT verbatim transcription of ALL text in the image (keep the original language, do not translate or summarize)\n- The context and purpose of the image\n- Any relevant technical details\n\nDescribe it naturally, as if explaining to someone what you are looking at right now. When the image contains Chinese text, transcribe it verbatim in Chinese."
+}
+```
+
+4. 打开配置目录下的 `opencode.jsonc`（没有则创建），内容为：
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@sami7786/opencode-image-proxy"]
+}
+```
+
+只写入 plugin 等必要字段，不要覆盖用户已有的其他配置（如 model、provider、mcp 等），如果文件里已有其它字段，请用合法 JSON 合并，保留原有内容。
+5. 完成后校验：两个文件都能被 JSON 解析。
+6. 最后打印「配置完成 ✅」。并明确提醒用户：【重要】必须完全退出并重启 opencode（不是关窗口，是进程退出）才会生效；重启后粘贴图片测试，看到 "[User pasted image: xxx]" + 一段描述文字即成功。如果出现 "this model does not support image input" 需要再检查模型名是否写对。
+
+【说明】
+- 视觉模型用免费 opencode/mimo-v2.5-free，无需任何 API Key，0 成本。
+- 本项目基于 @sami7788/opencode-image-proxy 开源插件（MIT），本提示词只做自动配置。
+
+（复制结束）
+
+---
+
+## 正文使用说明
+1. 把整段中的 `MODELS_GO_HERE` 占位符保留原样即可，AI 会自动替换成用户当前模型。
+2. 如果发给 opencode 的不是本会话（比如别人在别的机器上），直接发这段完整提示词即可。
+3. 提示词已内置「合并已有配置」「检测平台路径」「提醒重启」，无需手动干预。
