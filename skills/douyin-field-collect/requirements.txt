@@ -1,0 +1,7 @@
+requests>=2.31
+playwright>=1.45        # 之后运行：python -m playwright install chromium（已装系统 Chrome 可跳过）
+faster-whisper>=1.0     # 仅本地 ASR 需要
+numpy>=1.24
+Pillow>=10.0
+librosa>=0.10      # BGM 本地音频分析（BPM/拍点/风格特征）；会带上 scipy、numba、soundfile
+# 系统依赖：ffmpeg / ffprobe、curl；可选 yt-dlp（最后一级下载回退）
