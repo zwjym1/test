@@ -2,7 +2,7 @@
 """dy_collect.py — 单条抖音视频的“实地数据”采集（免登录），输出带字段状态的 collect.json + report.md
 用法：
   python dy_collect.py video <链接|作品ID> [-o 输出根目录] [-n 200] [--replies] [--reply-n 20]
-                       [--kw 关键词] [--browse] [--media] [--asr] [--asr-model small] [--hook-sec 5]
+                       [--kw 关键词] [--browse] [--media] [--asr] [--asr-model small] [--hook-sec 5] [--no-bgm-audio]
   python dy_collect.py sug <关键词> [--rel]      # 只取搜索框联想词（--rel 额外取 so.douyin 结果页“大家还在搜”）
 字段与状态：
   subtitle          先取抖音自带字幕（source=platform_caption，原文）；拿不到且开了 --media --asr 才走本地 ASR（source=local_asr，需复核）
@@ -10,6 +10,8 @@
   recommendations   按来源分开：comment_top_rec / detail_suggest_words(按 scene) / page_suggest_words(--browse) /
                     related_videos(--browse) / search_sug(--kw) / search_page_related(--kw 且 sug --rel)
   media             --media 时下载视频并截帧（开头 hook + 全片均匀帧）
+  bgm               音乐元数据（标题/作者/音乐ID/原声或曲库/音乐页/试听链接，逐项 status）；--media 时另做本地音频分析
+                    （BPM、拍点、强拍、切镜与拍点对齐、粗略风格桶），--no-bgm-audio 跳过音频分析
   每项 status ∈ available/partial/observed_empty/missing/blocked_login/blocked_verification/error/not_requested
 """
 import argparse, json, os, re, sys, time, urllib.parse as up
@@ -311,6 +313,12 @@ def collect(a_):
     res["recommendations"] = recs
     # 媒体 / 截帧 / ASR
     res["media"] = st("not_requested", hint="加 --media")
+    import bgm
+    ms, meta = bgm.music_meta(raw)
+    aa_hint = "已加 --no-bgm-audio" if a_.no_bgm_audio else "加 --media"
+    res["bgm"] = {"status": ms, "meta": meta, "audio_analysis": st("not_requested", hint=aa_hint),
+                  "style": st("not_requested", hint=aa_hint, note=bgm.HEURISTIC_NOTE)}
+    log("BGM 元数据", ms)
     if a_.media:
         import media
         path, mst = media.download_video(vid, od)
@@ -331,16 +339,30 @@ def collect(a_):
                                  segments=segs, text="\n".join(s["text"] for s in segs))
                     except Exception as e:
                         sub = st("error", source="local_asr", reason=type(e).__name__, platform_caption=sub)
+            if not a_.no_bgm_audio:
+                t0 = time.time()
+                try:
+                    aa, sty = bgm.analyze(path, a_.hook_sec, a_.scene_thr, speech_segments=sub.get("segments") if sub["status"] == "available" else None)
+                    aa["seconds"] = round(time.time() - t0, 1)
+                except Exception as e:
+                    aa = sty = st("error", reason=f"{type(e).__name__}: {str(e)[:120]}")
+                res["bgm"]["audio_analysis"], res["bgm"]["style"] = aa, sty
+                log("BGM 音频分析", aa["status"], aa.get("bpm"), "BPM；风格", sty.get("label"))
             if not a_.keep_video:
                 os.remove(path); mst["video_file"] = "已删除（加 --keep-video 保留）"
             else:
                 mst["video_file"] = os.path.basename(path)
+        elif not a_.no_bgm_audio:
+            res["bgm"]["audio_analysis"] = st("missing", reason="视频没下载到，无法分析音频")
+            res["bgm"]["style"] = st("missing", reason="视频没下载到", note=bgm.HEURISTIC_NOTE)
         res["media"] = mst
     res["subtitle"] = sub
     json.dump(res, open(os.path.join(od, "collect.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     open(os.path.join(od, "report.md"), "w", encoding="utf-8").write(report(res, cm))
     print(json.dumps({"out": od, "detail": dst["status"], "subtitle": [sub["status"], sub.get("source")], "comments": cst.get("status"),
-                      "recommendations": {k: v["status"] for k, v in recs.items()}, "media": res["media"]["status"]}, ensure_ascii=False))
+                      "recommendations": {k: v["status"] for k, v in recs.items()}, "media": res["media"]["status"],
+                      "bgm": {"meta": res["bgm"]["status"], "audio": res["bgm"]["audio_analysis"]["status"], "bpm": res["bgm"]["audio_analysis"].get("bpm"),
+                              "style": res["bgm"]["style"].get("label")}}, ensure_ascii=False))
 
 
 def fmt_t(s):
@@ -376,6 +398,24 @@ def report(r, cm):
             L.append(f"- {k}：{v['status']}（{len(v.get('items') or [])} 条视频）")
         else:
             L.append(f"- {k}：{v['status']}" + (f"：{'、'.join(v.get('words') or [])}" if v.get("words") else (f"（{v.get('reason') or v.get('hint') or ''}）")))
+    b = r.get("bgm") or {}
+    if b:
+        L += ["", "## BGM", f"- 元数据：{b['status']}"]
+        names = {"title": "曲名", "author": "作者", "music_id": "音乐 ID", "is_original_sound": "原声", "license_type": "类型",
+                 "music_page_url": "音乐页", "play_url": "试听直链", "duration_s": "时长(s)"}
+        for k, lb in names.items():
+            f = (b.get("meta") or {}).get(k) or {}
+            L.append(f"  - {lb}：{f.get('value') if f.get('value') not in (None, '') else '—'}（{f.get('status')}）")
+        aa = b.get("audio_analysis") or {}
+        L.append(f"- 音频分析：{aa.get('status')}" + (f"（{aa.get('reason') or aa.get('hint')}）" if aa.get("reason") or aa.get("hint") else ""))
+        if aa.get("status") == "available":
+            al, hk = aa["cut_beat_alignment"], aa["hook"]
+            L += [f"  - BPM {aa['bpm']}，拍点 {aa['beats_count']} 个，强拍 {len(aa['downbeats'])} 个（启发式）",
+                  f"  - 切镜 {al['cuts']} 次，±{al['tolerance_s']}s 内踩拍 {al['cuts_on_beat']} 次（{al['share_on_beat']}，随机基线 {al['chance_share']}；踩强拍 {al['share_on_downbeat']}）",
+                  f"  - 开头 {hk['window_s']}s：拍点 {hk['beats']}；切镜 {hk['cuts']}；踩拍切镜 {hk['cuts_on_beat']}"]
+        sy = b.get("style") or {}
+        if sy.get("status") == "available":
+            L.append(f"- 风格（{sy['note']}）：{sy['label']}，次选 {sy.get('runner_up')}；打分 {sy['scores']}")
     m = r["media"]
     L += ["", "## 媒体", f"- status：{m['status']}" + (f"  source：{m.get('source')}" if m.get("source") else "")]
     if m.get("tried"):
@@ -396,6 +436,8 @@ def main():
     v.add_argument("--browse", action="store_true", help="无头浏览器打开视频页，取看后搜/页面级推荐词与相关推荐视频")
     v.add_argument("--media", action="store_true", help="下载视频并截帧"); v.add_argument("--asr", action="store_true", help="无平台字幕时本地 ASR（需 --media）")
     v.add_argument("--asr-model", default="small"); v.add_argument("--hook-sec", type=float, default=5.0); v.add_argument("--keep-video", action="store_true")
+    v.add_argument("--no-bgm-audio", action="store_true", help="跳过 BGM 本地音频分析（BPM/拍点/切镜对齐/风格），只留音乐元数据")
+    v.add_argument("--scene-thr", type=float, default=0.3, help="切镜检测阈值（ffmpeg scene，默认 0.3）")
     g = sp.add_parser("sug", help="只取搜索联想词"); g.add_argument("kw"); g.add_argument("--rel", action="store_true")
     a = ap.parse_args()
     if a.cmd == "video":
